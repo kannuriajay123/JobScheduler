@@ -1,0 +1,15 @@
+name: job-processing-scheduler
+services:
+- name: api
+  github:
+    repo: kannuriajay123/JobScheduler
+    branch: main
+  build_command: mvn clean package -DskipTests
+  dockerfile_path: Dockerfile
+  http_port: 8080
+  source_dir: /
+static_sites:
+  - name: docs
+    source_dir: docs
+    routes:
+      - path: /docs
