@@ -1,8 +1,10 @@
 package com.example.jobqueue.service;
 
+import com.example.jobqueue.kafka.JobProducer;
 import com.example.jobqueue.model.Job;
 import com.example.jobqueue.model.JobStatus;
 import com.example.jobqueue.model.JobStatusResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
@@ -29,11 +31,22 @@ public class JobService {
     private final BlockingQueue<Job> jobQueue = new LinkedBlockingQueue<>();
     private final ConcurrentMap<String, Job> jobStore = new ConcurrentHashMap<>();
     private final ExecutorService workerPool = Executors.newFixedThreadPool(WORKER_COUNT);
+    private final JobProducer jobProducer;
+
+    @Value("${job.queue.use-kafka:true}")
+    private boolean useKafka;
+
+    public JobService(JobProducer jobProducer) {
+        this.jobProducer = jobProducer;
+    }
 
     @PostConstruct
     public void startWorkers() {
-        for (int i = 0; i < WORKER_COUNT; i++) {
-            workerPool.execute(new JobWorker());
+        // Only start local workers if not using Kafka
+        if (!useKafka) {
+            for (int i = 0; i < WORKER_COUNT; i++) {
+                workerPool.execute(new JobWorker());
+            }
         }
     }
 
@@ -45,8 +58,14 @@ public class JobService {
     public String submitJob(Map<String, Object> payload) {
         String id = UUID.randomUUID().toString();
         Job job = new Job(id, payload, DEFAULT_MAX_RETRIES);
+        job.markQueued();
         jobStore.put(id, job);
-        jobQueue.offer(job);
+        
+        if (useKafka) {
+            jobProducer.sendJob(job);
+        } else {
+            jobQueue.offer(job);
+        }
         return id;
     }
 
@@ -64,7 +83,10 @@ public class JobService {
         ));
     }
 
-    void processJob(Job job) {
+    /**
+     * Process job asynchronously - called by Kafka consumer or local worker
+     */
+    public void processJobAsync(Job job) {
         try {
             job.beginAttempt();
             String output = executeJobPayload(job);
@@ -86,6 +108,10 @@ public class JobService {
         }
     }
 
+    void processJob(Job job) {
+        processJobAsync(job);
+    }
+
     private String executeJobPayload(Job job) throws InterruptedException, TransientJobException, PermanentJobException {
         // Simulate background work delay.
         Thread.sleep(ThreadLocalRandom.current().nextLong(300, 700));
@@ -105,7 +131,11 @@ public class JobService {
     private void requeueWithDelay(Job job) {
         try {
             Thread.sleep(RETRY_DELAY.toMillis());
-            jobQueue.offer(job);
+            if (useKafka) {
+                jobProducer.sendJob(job);
+            } else {
+                jobQueue.offer(job);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             job.markFailed("Retry interrupted while requeueing.");
@@ -119,7 +149,7 @@ public class JobService {
             while (!Thread.currentThread().isInterrupted()) {
                 try {
                     Job job = jobQueue.take();
-                    processJob(job);
+                    processJobAsync(job);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 }

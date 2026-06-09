@@ -1,17 +1,18 @@
 # Job Processing Scheduler
 
-A Spring Boot REST API with an asynchronous background worker queue.
+A Spring Boot REST API with an asynchronous background worker queue. Supports both in-memory queuing and **Apache Kafka** for distributed processing.
 
 ## Architecture
 
 The system consists of:
 
 - `JobController`: accepts HTTP POST submissions and returns a `jobId` immediately.
-- `JobService`: stores job state in a thread-safe `ConcurrentHashMap` and queues jobs in a `LinkedBlockingQueue`.
-- `JobWorker`: a fixed-size worker pool that pulls jobs from the queue and processes them in the background.
+- `JobService`: stores job state in a thread-safe `ConcurrentHashMap` and queues jobs using either `LinkedBlockingQueue` (local) or **Kafka** (distributed).
+- `JobWorker` / `JobConsumer`: worker pool that processes jobs in the background.
 
-Flow diagram:
+### Queue Modes
 
+#### Local Mode (Default)
 ```text
 Client HTTP POST /api/jobs
           |
@@ -20,12 +21,12 @@ Client HTTP POST /api/jobs
           |
           v
     JobService.submitJob()
-       - persist job state
-       - enqueue job
+    - persist job state
+    - enqueue locally
           |
           v
    background worker pool
-(LinkedBlockingQueue -> JobWorker)
+  (LinkedBlockingQueue)
           |
           v
      process payload
@@ -33,8 +34,35 @@ Client HTTP POST /api/jobs
           |
           v
      update job status
-   (QUEUED, RUNNING, COMPLETED,
-           FAILED)
+```
+
+#### Kafka Mode (Distributed)
+```text
+Client HTTP POST /api/jobs
+          |
+          v
+    JobController
+          |
+          v
+    JobService.submitJob()
+    - persist job state
+    - send to Kafka
+          |
+          v
+     Kafka Broker
+    (job-submissions topic)
+          |
+    +-----+-----+
+    |     |     |
+    v     v     v
+ Consumer 1,2,3
+  (parallel processing)
+    |     |     |
+    +-----+-----+
+          |
+          v
+ JobService.processJobAsync()
+    update job status
 ```
 
 ## Endpoints
@@ -53,8 +81,9 @@ Client HTTP POST /api/jobs
 
 - Java 21
 - Maven
+- Docker (optional, for Kafka)
 
-### Build and run
+### Quick Start (Local Mode)
 
 ```bash
 cd /workspaces/JobProcessingScheduler
@@ -62,22 +91,68 @@ mvn clean package
 java -jar target/job-processing-scheduler-0.0.1-SNAPSHOT.jar
 ```
 
-### Run tests
+Server runs on `http://localhost:8080`
+
+### With Kafka (Distributed Mode)
 
 ```bash
 cd /workspaces/JobProcessingScheduler
+
+# Start Kafka + API
+docker-compose up -d
+
+# Wait for Kafka to initialize (~10-15 seconds)
+sleep 20
+
+# Verify
+curl http://localhost:8080/api/jobs
+```
+
+See [KAFKA.md](KAFKA.md) for detailed Kafka configuration and multi-instance deployment.
+
+### Run tests
+
+```bash
 mvn test
+```
+
+## Configuration
+
+### Enable Kafka
+
+```yaml
+# application.yml
+job:
+  queue:
+    use-kafka: true
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+```
+
+Or via environment variable:
+```bash
+java -Djob.queue.use-kafka=true \
+     -Dspring.kafka.bootstrap-servers=kafka:9092 \
+     -jar target/job-processing-scheduler-0.0.1-SNAPSHOT.jar
 ```
 
 ## Known limitations
 
-- Uses in-memory storage; state is lost if the application restarts.
-- Worker pool and queue are inside the same application process, so scaling requires additional architectural changes.
-- Retry logic is basic and simulates transient failures with a fixed retry count.
-- No persistent audit or job history storage is included.
+### Local Mode
+- Uses in-memory storage; state is lost on restart
+- Single-instance only (no horizontal scaling)
+
+### Kafka Mode
+- Requires external Kafka broker
+- Job state not persisted to database (use ConcurrentHashMap only)
+- No built-in monitoring dashboard
 
 ## Extensions
 
-- Add durable queue backing such as RabbitMQ, Kafka, or Redis.
-- Add job cancellation and priority-based processing.
-- Add deployment manifests for DigitalOcean, Kubernetes, or Docker.
+- Add persistent job storage (PostgreSQL, MongoDB)
+- Add job cancellation and priority-based processing
+- Add deployment manifests for DigitalOcean, Kubernetes, or Docker
+- Add distributed tracing (OpenTelemetry)
+- Add metrics collection (Micrometer/Prometheus)
+
