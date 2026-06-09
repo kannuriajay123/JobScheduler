@@ -10,16 +10,20 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Unit tests for JobProcessingService
+ * Tests verify single responsibility: job execution and retry logic
+ */
 @SpringBootTest
 class JobServiceTest {
 
     @Autowired
-    private JobService jobService;
+    private JobProcessingService jobProcessingService;
 
     @Test
     void processJobCompletesWhenNoErrorIsSimulated() {
         Job job = new Job("test-job", Map.of("message", "hello"), 3);
-        jobService.processJob(job);
+        jobProcessingService.process(job);
 
         assertThat(job.getStatus()).isEqualTo(JobStatus.COMPLETED);
         assertThat(job.getResult()).contains("hello");
@@ -31,7 +35,7 @@ class JobServiceTest {
         Job job = new Job("retry-job", Map.of("simulateError", "transient"), 3);
 
         while (job.getStatus() == JobStatus.QUEUED) {
-            jobService.processJob(job);
+            jobProcessingService.process(job);
         }
 
         assertThat(job.getStatus()).isEqualTo(JobStatus.FAILED);
@@ -42,7 +46,7 @@ class JobServiceTest {
     @Test
     void processJobFailsImmediatelyForPermanentErrors() {
         Job job = new Job("permanent-job", Map.of("simulateError", "permanent"), 3);
-        jobService.processJob(job);
+        jobProcessingService.process(job);
 
         assertThat(job.getStatus()).isEqualTo(JobStatus.FAILED);
         assertThat(job.getAttemptCount()).isEqualTo(1);
